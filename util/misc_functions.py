@@ -145,7 +145,7 @@ def save_image(im, path):
     im.save(path)
 
 
-def preprocess_image(pil_im, resize_im=True):
+def preprocess_image(pil_im, device, resize_im=True):
     """
         Processes image for CNNs
 
@@ -178,7 +178,7 @@ def preprocess_image(pil_im, resize_im=True):
         im_as_arr[channel] -= mean[channel]
         im_as_arr[channel] /= std[channel]
     # Convert to float tensor
-    im_as_ten = torch.from_numpy(im_as_arr).float()
+    im_as_ten = torch.from_numpy(im_as_arr).float().to(device)
     # Add one more channel to the beginning. Tensor shape = 1,3,224,224
     im_as_ten.unsqueeze_(0)
     # Convert to Pytorch variable
