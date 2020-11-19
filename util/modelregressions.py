@@ -1,6 +1,7 @@
 import sklearn 
 import torch
 from torch.autograd import Variable
+import torch.nn as nn
 from tqdm import tqdm
 import numpy as np
 from sklearn.linear_model import LinearRegression
@@ -27,12 +28,12 @@ class CNNCrossFit():
         self.target_net.eval()
         self.source_net.eval()
     
-    def design(self,dataset,batch_size = 1, record_gradient = False):
+    def design(self,dataset, batch_size = 1, record_gradient = False):
         # design extract activation (and gradient) for the entire dataset
         self.ndata = len(dataset)
         self.batch_size = batch_size
         self.batchloader = torch.utils.data.DataLoader(dataset, batch_size=self.batch_size,
-                        shuffle=False, num_workers=0)
+                        shuffle=True, num_workers=0)
         # create empty list for holding data
         Xsor = []
         Xtar = []
@@ -109,17 +110,14 @@ class CNNCrossFit():
         self.w = np.empty((self.n_sor,self.n_tar))
         self.b = np.empty(self.n_tar)
         self.train_score = [None]*self.n_tar
-        self.test_score = [None]*self.n_tar
         
         if self.grad:
             self.Xg_train = np.concatenate(self.Xsor_grad[:n_train],axis=1).T;
             self.Xg_test = np.concatenate(self.Xsor_grad[n_train:n_train+n_test],axis=1).T;
             self.yg_train = np.concatenate(self.Xtar_grad[:n_train],axis=1).T;
             self.yg_test = np.concatenate(self.Xtar_grad[n_train:n_train+n_test],axis=1).T;
-            print()
-            
+
             self.train_gscore = [None]*self.n_tar
-            self.test_gscore = [None]*self.n_tar
         
         print('Linear regression from source to target:')
         for i in tqdm(range(self.n_tar)):
@@ -135,28 +133,52 @@ class CNNCrossFit():
             yg_predtrain = np.matmul(self.Xg_train,self.w.T)
             for i in tqdm(range(self.n_tar)):
                 self.train_gscore[i] = EV(self.yg_train[:,i],yg_predtrain[:,i])
-
-    def score(self, test_time_scramble = False):
+                
+    def score(self, scramble = False):
+        print('Calculating test score:')
+        self.test_score = [None]*self.n_tar
         for i in tqdm(range(self.n_tar)):
-            if test_time_scramble:
-                y_pred = np.matmul(self.X_test,self.w[np.random.shuffle(list(range(self.n_sor))),i].T) + self.b[i]
+            if scramble:
+                y_predtest = np.matmul(self.X_test,self.ws[:,i].T) + self.b[i]
             else:
-                y_pred = np.matmul(self.X_test,self.w[:,i].T) + self.b[i]
-            self.test_score[i] = EV(self.y_test[:,i],y_pred)
+                y_predtest = np.matmul(self.X_test,self.w[:,i].T) + self.b[i]
+            self.test_score[i] = EV(self.y_test[:,i],y_predtest)
+        
         if self.grad:
-            if test_time_scramble:
-                yg_predtest = np.matmul(self.Xg_test,self.w[np.random.shuffle(list(range(self.n_sor))),:].T) 
+            print('Calculating test gradient score:')
+            self.test_gscore = [None]*self.n_tar
+            if scramble:
+                yg_predtest = np.matmul(self.Xg_test,self.ws.T) 
             else:
                 yg_predtest = np.matmul(self.Xg_test,self.w.T) 
             for i in tqdm(range(self.n_tar)):
                 self.test_gscore[i] = EV(self.yg_test[:,i],yg_predtest[:,i])
     
-    def control(self, scramble = False,subset=None,n_iter = 10):
+    def make_centaur(self,scramble = False):
+        # conjure the mysterious half-man half-beast by glueing the source net to a conv2d layer
+        self.centaur_net = nn.Sequential(
+                            self.source_net,
+                            nn.Conv2d(self.n_sor,self.n_tar,(1,1),stride = 1).to(self.device)
+                        )
+        # populate with learned weights
+        with torch.no_grad():
+            if scramble:
+                self.ws = self.w
+                for i in range(self.n_tar):
+                    self.ws[:,i] = np.random.choice(self.ws[:,i],replace = False)
+                self.centaur_net[-1].weight.copy_(torch.tensor(self.ws.T).unsqueeze(2).unsqueeze(3))
+                self.centaur_net[-1].bias.copy_(torch.tensor(self.b))
+            else:
+                self.centaur_net[-1].weight.copy_(torch.tensor(self.w.T).unsqueeze(2).unsqueeze(3))
+                self.centaur_net[-1].bias.copy_(torch.tensor(self.b))
+        
+    def control(self, subset=None, n_iter = 20):
         self.n_iter = n_iter
         # implement control with either source or target net
         self.target_act = np.zeros(self.n_tar)
         self.source_act = np.zeros(self.n_tar)
         self.ctr_score = np.zeros(self.n_tar)
+        
         if subset==None:
             self.target_subset = self.target_unit
             self.n_ctr = self.n_tar
@@ -170,15 +192,11 @@ class CNNCrossFit():
             target_controller.visualize(niter=self.n_iter,label = 'snet_tar_l'+str(self.cnn_layer)+'_u'+str(self.target_unit[i]))
             self.target_act[i] = target_controller.act
             # source control
-            if scramble:
-                w = self.w[np.random.shuffle(list(range(self.n_sor))),i]
-            else:
-                w = self.w[:,i]  
-            source_controller = NeuralController(self.source_net,self.source_unit,self.img_dim,self.device,w,self.b[i])
-            source_controller.visualize(niter=self.n_iter,label = 'snet_source_l'+str(self.cnn_layer)+'_u'+str(self.target_unit[i]))
+            centaur_controller = NeuralController(self.centaur_net,self.target_unit[i],self.img_dim,self.device)
+            centaur_controller.visualize(niter=self.n_iter,label = 'snet_sor_l'+str(self.cnn_layer)+'_u'+str(self.target_unit[i]))
             # calculate fraction control
-            x = self.target_net.forward(source_controller.processed_image)
+            x = self.target_net.forward(centaur_controller.processed_image)
             self.source_act[i] = torch.mean(x[0,self.target_unit[i]])
-            self.ctr_score[i] = self.source_act[i]/(self.target_act[i]+.01)
+            self.ctr_score[i] = self.source_act[i]/self.target_act[i]
         
                 

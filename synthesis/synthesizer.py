@@ -23,7 +23,7 @@ class NeuralController():
             os.makedirs('generated')
             print('folder created')
 
-    def visualize(self,niter=30,label='',obj = 'stretch'):
+    def visualize(self,niter=20,label='',obj = 'stretch'):
         random_image = np.uint8(np.random.uniform(60, 140, (self.dim[0], self.dim[1], self.dim[2])))
         self.processed_image = preprocess_image(random_image, self.device, False)
         # Define optimizer for the image

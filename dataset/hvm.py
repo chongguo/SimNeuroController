@@ -13,6 +13,7 @@ class HVMDataset(torch.utils.data.Dataset):
         self.data = torch.empty((self.n, 3, 256,256))
         for [index,imgname] in enumerate(img_list[:nsamp]):   
             self.data[index]=torch.from_numpy(mpimg.imread(self.img_dir+os.path.sep+imgname)).permute(2, 0, 1)
+        
         self.data = self.data.to(device)
 
     def __len__(self):
