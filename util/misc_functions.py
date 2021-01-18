@@ -12,7 +12,13 @@ import matplotlib.cm as mpl_color_map
 import torch
 from torch.autograd import Variable
 from torchvision import models
+import gc
 
+# handy function for checking if there is leaked items in the gpu
+def memReport():
+    for obj in gc.get_objects():
+        if torch.is_tensor(obj):
+            print(type(obj), obj.size())
 
 def convert_to_grayscale(im_as_arr):
     """
@@ -145,7 +151,7 @@ def save_image(im, path):
     im.save(path)
 
 
-def preprocess_image(pil_im, device, resize_im=True):
+def preprocess_image(pil_im, device, dataset = 'hvm', resize_im=False, unsqueeze = True, asvar = True):
     """
         Processes image for CNNs
 
@@ -155,12 +161,19 @@ def preprocess_image(pil_im, device, resize_im=True):
     returns:
         im_as_var (torch variable): Variable that contains processed float tensor
     """
-    # mean and std list for channels (Imagenet)
-    mean = [0.485, 0.456, 0.406]
-    std = [0.229, 0.224, 0.225]
+    if dataset == 'hvm':
+        # mean and std list for channels (HVM)
+        maxval = 1
+        mean = [0.45, 0.45, 0.45]
+        std = [.2, .2, .2]
+    elif dataset == 'imagenet':
+        # mean and std list for channels (Imagenet)
+        maxval = 255
+        mean = [0.485, 0.456, 0.406]
+        std = [0.229, 0.224, 0.225]
 
     #ensure or transform incoming image to PIL image
-    if type(pil_im) != Image.Image:
+    if resize_im and type(pil_im) != Image.Image:
         try:
             pil_im = Image.fromarray(pil_im)
         except Exception as e:
@@ -174,19 +187,23 @@ def preprocess_image(pil_im, device, resize_im=True):
     im_as_arr = im_as_arr.transpose(2, 0, 1)  # Convert array to D,W,H
     # Normalize the channels
     for channel, _ in enumerate(im_as_arr):
-        im_as_arr[channel] /= 255
+        im_as_arr[channel] /= maxval
         im_as_arr[channel] -= mean[channel]
         im_as_arr[channel] /= std[channel]
     # Convert to float tensor
     im_as_ten = torch.from_numpy(im_as_arr).float().to(device)
     # Add one more channel to the beginning. Tensor shape = 1,3,224,224
-    im_as_ten.unsqueeze_(0)
+    if unsqueeze:
+        im_as_ten.unsqueeze_(0)
     # Convert to Pytorch variable
-    im_as_var = Variable(im_as_ten, requires_grad=True)
-    return im_as_var
+    if asvar:
+        im_as_var = Variable(im_as_ten, requires_grad=True)
+        return im_as_var
+    else:
+        return im_as_ten
 
 
-def recreate_image(im_as_var):
+def recreate_image(im_as_var, dataset = 'hvm'):
     """
         Recreates images from a torch variable, sort of reverse preprocessing
     Args:
@@ -194,8 +211,17 @@ def recreate_image(im_as_var):
     returns:
         recreated_im (numpy arr): Recreated image in array
     """
-    reverse_mean = [-0.485, -0.456, -0.406]
-    reverse_std = [1/0.229, 1/0.224, 1/0.225]
+    if dataset == 'hvm':
+        # mean and std list for channels (HVM)
+        maxval = 1
+        reverse_mean = [-0.45, -0.45, -0.45]
+        reverse_std = [1/.2, 1/.2, 1/.2]
+    elif dataset == 'imagenet':
+        # mean and std list for channels (Imagenet)
+        maxval = 255
+        reverse_mean = [-0.485, -0.456, -0.406]
+        reverse_std = [1/0.229, 1/0.224, 1/0.225]
+    
     recreated_im = copy.copy(im_as_var.data.numpy()[0])
     for c in range(3):
         recreated_im[c] /= reverse_std[c]
@@ -254,3 +280,37 @@ def get_example_params(example_index):
             target_class,
             file_name_to_export,
             pretrained_model)
+
+# this is a function that indexes the units and returns the nd-index for the orginal output tensor.
+class indexfun():
+    def __init__(self,dim,selected_units=None):
+        # dim is the tuple for the size along each dimsion of the output tensor
+        # first dimension always corresponds to selected units
+        self.dim = dim
+        self.sur_indices = np.array(list(np.ndindex(*dim)))
+        self.tar_indices = self.sur_indices
+        if selected_units is not None:
+            self.tar_indices[:,0]= selected_units[self.tar_indices[:,0]]
+        self.n = len(self.tar_indices)
+            
+    def __len__(self):
+        return self.n
+    
+    def get_tar(self,idx,samp_idx=None):
+        if samp_idx is None:
+            unit_idx = tuple(self.tar_indices[idx].T.tolist())
+        else:
+            batch_idx = np.asarray([[samp_idx]*len(idx)]).transpose(0,2,1)
+            set_idx = np.expand_dims(self.tar_indices[idx],axis=2).repeat(len(samp_idx),axis=2).transpose(1,2,0)
+            unit_idx = tuple(np.concatenate((batch_idx,set_idx),axis=0).tolist())
+        return unit_idx
+    
+    def get_sur(self,idx,samp_idx=None):
+        if samp_idx is None:
+            unit_idx = tuple(self.sur_indices[idx].T.tolist())
+        else:
+            batch_idx = np.asarray([[samp_idx]*len(idx)]).transpose(0,2,1)
+            set_idx = np.expand_dims(self.sur_indices[idx],axis=2).repeat(len(samp_idx),axis=2).transpose(1,2,0)
+            unit_idx = tuple(np.concatenate((batch_idx,set_idx),axis=0).tolist())
+        return unit_idx
+   
